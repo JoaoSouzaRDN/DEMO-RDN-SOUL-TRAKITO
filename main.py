@@ -1,7 +1,6 @@
 from fastapi import FastAPI
 from pydantic import BaseModel
 import psycopg2
-import psycopg2.extras
 import os
 from dotenv import load_dotenv
 
@@ -18,107 +17,67 @@ DB_USER = os.getenv("DB_USER")
 DB_PASSWORD = os.getenv("DB_PASSWORD")
 DB_PORT = os.getenv("DB_PORT")
 
-ALLOWED_COMMANDS = (
-    "select",
-    "insert",
-    "update"
-)
-
-BLOCKED_TERMS = (
-    "drop ",
-    "truncate ",
-    "delete ",
-    "alter ",
-    "create ",
-    "grant ",
-    "revoke "
-)
-
 @app.post("/executar-sql")
 def executar_sql(request: QueryRequest):
 
-    sql_original = request.sql.strip()
-
-    sql_lower = sql_original.lower()
-
-    # =========================
-    # VALIDACAO COMANDO
-    # =========================
-
-    if not sql_lower.startswith(ALLOWED_COMMANDS):
-        return {
-            "erro": "Comando SQL nao permitido"
-        }
-
-    # =========================
-    # BLOQUEIO SEGURANCA
-    # =========================
-
-    for termo in BLOCKED_TERMS:
-        if termo in sql_lower:
-            return {
-                "erro": f"Termo bloqueado detectado: {termo}"
-            }
-
-    conn = psycopg2.connect(
-        host=DB_HOST,
-        database=DB_NAME,
-        user=DB_USER,
-        password=DB_PASSWORD,
-        port=DB_PORT,
-        options="-c search_path=demo_rdn_soul_agents_trackito"
-    )
-
-    cur = conn.cursor(
-        cursor_factory=psycopg2.extras.RealDictCursor
-    )
+    conn = None
+    cur = None
 
     try:
 
-        cur.execute(sql_original)
+        conn = psycopg2.connect(
+            host=DB_HOST,
+            database=DB_NAME,
+            user=DB_USER,
+            password=DB_PASSWORD,
+            port=DB_PORT,
+            options="-c search_path=demo_rdn_soul_agents_trackito"
+        )
 
-        # =========================
-        # SELECT
-        # =========================
+        cur = conn.cursor()
+
+        sql_lower = request.sql.strip().lower()
+
+        cur.execute(request.sql)
 
         if sql_lower.startswith("select"):
 
             rows = cur.fetchall()
 
+            columns = [desc[0] for desc in cur.description]
+
+            resultado = []
+
+            for row in rows:
+                resultado.append(dict(zip(columns, row)))
+
             return {
                 "success": True,
-                "rows": rows
+                "rows": resultado
             }
 
-        # =========================
-        # INSERT / UPDATE
-        # =========================
+        else:
 
-        conn.commit()
+            conn.commit()
 
-        resultado = {
-            "success": True,
-            "rows_affected": cur.rowcount
-        }
+            returning = []
 
-        # =========================
-        # RETURNING
-        # =========================
+            if cur.description:
+                columns = [desc[0] for desc in cur.description]
 
-        try:
+                for row in cur.fetchall():
+                    returning.append(dict(zip(columns, row)))
 
-            returning_rows = cur.fetchall()
-
-            resultado["returning"] = returning_rows
-
-        except:
-            pass
-
-        return resultado
+            return {
+                "success": True,
+                "rows_affected": cur.rowcount,
+                "returning": returning
+            }
 
     except Exception as e:
 
-        conn.rollback()
+        if conn:
+            conn.rollback()
 
         return {
             "success": False,
@@ -127,5 +86,8 @@ def executar_sql(request: QueryRequest):
 
     finally:
 
-        cur.close()
-        conn.close()
+        if cur:
+            cur.close()
+
+        if conn:
+            conn.close()
